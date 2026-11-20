@@ -25,6 +25,9 @@ constexpr uint32_t ScanResultRequest = 11;
 constexpr uint32_t ScanMultipleRequest = 86;
 constexpr size_t LegacyScanMultipleSize = 0x14E0;
 constexpr size_t NativeScanMultipleSize = 0x14E8;
+// APPLE80211_IOC_WOW_PARAMETERS. The legacy handlers reject any length other than 0x4698.
+constexpr uint32_t WoWParametersRequest = 69;
+constexpr size_t LegacyWoWParametersSize = 0x4698;
 constexpr uint32_t CardCapabilitiesRequest = 12;
 constexpr uint32_t ScanDoneEvent = 10;
 constexpr uint32_t DriverAvailableEvent = 0x37;
