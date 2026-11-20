@@ -52,6 +52,66 @@ bool compactWoWParameters(const uint8_t *legacy, uint8_t *native) {
 }
 }
 
+// Country code continuity across sleep. The Broadcom chip is reset during system sleep on non-Apple
+// platforms and comes back without a country. airportd then discards its regulatory country and falls
+// back to slow passive scans until it relearns the country from nearby access points. SimpleBCM keeps
+// the last valid country reported by the driver and restores it when the driver reports none.
+namespace {
+constexpr int32_t CountryCodeRequest = 51;
+char savedCountry[3];
+
+bool isValidCountry(const char *code) {
+    if (code[0] < 'A' || code[0] > 'Z' || code[1] < 'A' || code[1] > 'Z')
+        return false;
+    // Broadcom/IEEE world and placeholder codes are not a real country.
+    static const char *const placeholders[] = {"XA", "XB", "XV", "XW", "XX", "XY", "XZ", "WW", "ZZ"};
+    for (auto placeholder : placeholders) {
+        if (code[0] == placeholder[0] && code[1] == placeholder[1])
+            return false;
+    }
+    return true;
+}
+
+// Runs in the controller's command gate after a successful GET of the country code.
+void maintainCountry(const bcm::Endpoint &endpoint, bcm::LegacyRequest &request, uint8_t *output,
+                     size_t outputLength, size_t capacity) {
+    if (outputLength < sizeof(bcm::CountryCodeData))
+        return;
+    bcm::CountryCodeData current;
+    memcpy(&current, output, sizeof(current));
+    if (current.version != 1)
+        return;
+    if (isValidCountry(current.country)) {
+        if (savedCountry[0] != current.country[0] || savedCountry[1] != current.country[1]) {
+            savedCountry[0] = current.country[0];
+            savedCountry[1] = current.country[1];
+            SYSLOG("country", "saved %c%c", savedCountry[0], savedCountry[1]);
+        }
+        return;
+    }
+    if (!savedCountry[0])
+        return;
+    uint8_t buffer[sizeof(bcm::CountryCodeData) + 8] {};
+    bcm::CountryCodeData restore {};
+    restore.version = 1;
+    restore.country[0] = savedCountry[0];
+    restore.country[1] = savedCountry[1];
+    memcpy(buffer, &restore, sizeof(restore));
+    bcm::LegacyRequest set = request;
+    set.request.length = sizeof(restore);
+    set.request.data = reinterpret_cast<uintptr_t>(buffer);
+    const auto setResult = bcm::Bridge::command(endpoint, true, set, buffer, sizeof(buffer));
+    if (setResult) {
+        SYSLOG("country", "restore %c%c failed (%d)", savedCountry[0], savedCountry[1], setResult);
+        return;
+    }
+    const auto getResult = bcm::Bridge::command(endpoint, false, request, output, capacity);
+    memcpy(&current, output, sizeof(current));
+    SYSLOG("country", "restored %c%c, driver now reports %c%c (%d)", savedCountry[0], savedCountry[1],
+           current.country[0] ? current.country[0] : '-', current.country[1] ? current.country[1] : '-', getResult);
+}
+}
+
 bool BCM80211UserClient::entitled(const char *entitlement) const {
     auto value = copyClientEntitlement(ownerTask, entitlement);
     const bool allowed = value == kOSBooleanTrue;
@@ -361,20 +421,7 @@ IOReturn BCM80211UserClient::runCommand(IOExternalMethodArguments *arguments, si
     }
     legacy.request.data = reinterpret_cast<uintptr_t>(shadow);
     legacy.request.length = static_cast<uint32_t>(get ? outputSize : header->length);
-    if (set && (request == 10 || request == bcm::ScanMultipleRequest) && header->length >= 0x260) {
-        // Temporary diagnostic: dump the native scan request around the channel list.
-        const auto w = [&](size_t offset) { return bcm::readUInt32(shadow + offset); };
-        SYSLOG("scan", "req %d len 0x%x w0 %x w8 %x w19c %x", request, header->length, w(0), w(8), w(0x19C));
-        static const uint16_t bases[] = {0x000, 0x020, 0x040, 0x060, 0x080, 0x0A0, 0x12E0, 0x1300, 0x1320,
-                                         0x1520, 0x1540, 0x1560, 0x1578};
-        for (auto base : bases) {
-            if (base + 0x20 > header->length)
-                continue;
-            SYSLOG("scan", "req %d @%04x: %08x %08x %08x %08x %08x %08x %08x %08x", request, base,
-                   w(base), w(base + 4), w(base + 8), w(base + 12), w(base + 16), w(base + 20), w(base + 24), w(base + 28));
-        }
-    }
-    if (scanResult &&!bcm::prepareScanResult(legacy.request, shadow, capacity, abi))
+    if (scanResult && !bcm::prepareScanResult(legacy.request, shadow, capacity, abi))
         goto done;
     if (set && request == bcm::ScanMultipleRequest &&
         !bcm::prepareScanMultiple(legacy.request, shadow, capacity, abi))
@@ -419,6 +466,8 @@ IOReturn BCM80211UserClient::runCommand(IOExternalMethodArguments *arguments, si
         result = static_cast<IOReturn>(bcm::Bridge::command(endpoint, set, legacy, shadow, capacity));
     }
     if (result == kIOReturnSuccess) {
+        if (get && request == CountryCodeRequest)
+            maintainCountry(endpoint, legacy, shadow, legacy.request.length, capacity);
         if (wowParameters) {
             if (get && !compactWoWParameters(wowBuffer, shadow)) {
                 result = kIOReturnOverrun;
