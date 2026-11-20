@@ -365,9 +365,14 @@ IOReturn BCM80211UserClient::runCommand(IOExternalMethodArguments *arguments, si
         // Temporary diagnostic: dump the native scan request around the channel list.
         const auto w = [&](size_t offset) { return bcm::readUInt32(shadow + offset); };
         SYSLOG("scan", "req %d len 0x%x w0 %x w8 %x w19c %x", request, header->length, w(0), w(8), w(0x19C));
-        for (size_t base = 0x1F0; base < 0x260; base += 0x20)
-            SYSLOG("scan", "req %d @%03zx: %08x %08x %08x %08x %08x %08x %08x %08x", request, base,
+        static const uint16_t bases[] = {0x000, 0x020, 0x040, 0x060, 0x080, 0x0A0, 0x12E0, 0x1300, 0x1320,
+                                         0x1520, 0x1540, 0x1560, 0x1578};
+        for (auto base : bases) {
+            if (base + 0x20 > header->length)
+                continue;
+            SYSLOG("scan", "req %d @%04x: %08x %08x %08x %08x %08x %08x %08x %08x", request, base,
                    w(base), w(base + 4), w(base + 8), w(base + 12), w(base + 16), w(base + 20), w(base + 24), w(base + 28));
+        }
     }
     if (scanResult &&!bcm::prepareScanResult(legacy.request, shadow, capacity, abi))
         goto done;
