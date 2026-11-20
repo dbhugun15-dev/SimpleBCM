@@ -361,7 +361,15 @@ IOReturn BCM80211UserClient::runCommand(IOExternalMethodArguments *arguments, si
     }
     legacy.request.data = reinterpret_cast<uintptr_t>(shadow);
     legacy.request.length = static_cast<uint32_t>(get ? outputSize : header->length);
-    if (scanResult && !bcm::prepareScanResult(legacy.request, shadow, capacity, abi))
+    if (set && (request == 10 || request == bcm::ScanMultipleRequest) && header->length >= 0x260) {
+        // Temporary diagnostic: dump the native scan request around the channel list.
+        const auto w = [&](size_t offset) { return bcm::readUInt32(shadow + offset); };
+        SYSLOG("scan", "req %d len 0x%x w0 %x w8 %x w19c %x", request, header->length, w(0), w(8), w(0x19C));
+        for (size_t base = 0x1F0; base < 0x260; base += 0x20)
+            SYSLOG("scan", "req %d @%03zx: %08x %08x %08x %08x %08x %08x %08x %08x", request, base,
+                   w(base), w(base + 4), w(base + 8), w(base + 12), w(base + 16), w(base + 20), w(base + 24), w(base + 28));
+    }
+    if (scanResult &&!bcm::prepareScanResult(legacy.request, shadow, capacity, abi))
         goto done;
     if (set && request == bcm::ScanMultipleRequest &&
         !bcm::prepareScanMultiple(legacy.request, shadow, capacity, abi))
