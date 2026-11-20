@@ -12,6 +12,46 @@
 
 OSDefineMetaClassAndStructors(BCM80211UserClient, IOUserClient)
 
+// APPLE80211_IOC_WOW_PARAMETERS layout conversion.
+// Legacy (IO80211FamilyLegacy, checked by disassembly): 0x10-byte header with the pattern count at
+// +0x0C (max 12), 12 pattern slots of 0x5E0 bytes (u32 length <= 0x5DC + data) from +0x10, then two
+// u32 at +0x4690/+0x4694; total 0x4698. Tahoe airportd sends 0x3AD8 bytes, which is exactly the same
+// header, 10 pattern slots and the same 8-byte trailer. AirPort_BrcmNIC itself uses at most 10 patterns.
+namespace {
+constexpr size_t NativeWoWParametersSize = 0x3AD8;
+constexpr size_t WoWPatternOffset = 0x10;
+constexpr size_t WoWPatternSize = 0x5E0;
+constexpr uint32_t WoWPatternDataMax = 0x5DC;
+constexpr uint32_t NativeWoWPatternCapacity = 10;
+constexpr size_t NativeWoWTrailerOffset = WoWPatternOffset + NativeWoWPatternCapacity * WoWPatternSize;
+constexpr size_t LegacyWoWTrailerOffset = 0x4690;
+constexpr size_t WoWTrailerSize = 8;
+static_assert(NativeWoWTrailerOffset + WoWTrailerSize == NativeWoWParametersSize, "Native WoW layout");
+static_assert(LegacyWoWTrailerOffset + WoWTrailerSize == bcm::LegacyWoWParametersSize, "Legacy WoW layout");
+
+bool expandWoWParameters(const uint8_t *native, uint8_t *legacy) {
+    const auto count = bcm::readUInt32(native + 0x0C);
+    if (count > NativeWoWPatternCapacity)
+        return false;
+    for (size_t index = 0; index < count; ++index) {
+        if (bcm::readUInt32(native + WoWPatternOffset + index * WoWPatternSize) > WoWPatternDataMax)
+            return false;
+    }
+    bzero(legacy, bcm::LegacyWoWParametersSize);
+    memcpy(legacy, native, NativeWoWTrailerOffset);
+    memcpy(legacy + LegacyWoWTrailerOffset, native + NativeWoWTrailerOffset, WoWTrailerSize);
+    return true;
+}
+
+bool compactWoWParameters(const uint8_t *legacy, uint8_t *native) {
+    if (bcm::readUInt32(legacy + 0x0C) > NativeWoWPatternCapacity)
+        return false;
+    memcpy(native, legacy, NativeWoWTrailerOffset);
+    memcpy(native + NativeWoWTrailerOffset, legacy + LegacyWoWTrailerOffset, WoWTrailerSize);
+    return true;
+}
+}
+
 bool BCM80211UserClient::entitled(const char *entitlement) const {
     auto value = copyClientEntitlement(ownerTask, entitlement);
     const bool allowed = value == kOSBooleanTrue;
@@ -289,7 +329,7 @@ IOReturn BCM80211UserClient::runCommand(IOExternalMethodArguments *arguments, si
     const bool roamProfiles = request == bcm::RoamProfileRequest && abi.roamProfileSize == bcm::NativeRoamProfileSize;
     bool outputPrepared = false;
     const bool wowParameters = (set || get) && request == static_cast<int32_t>(bcm::WoWParametersRequest);
-    size_t wowNativeSize = 0;
+    uint8_t *wowBuffer = nullptr;
     __atomic_fetch_add(&bcm::counters.commands, 1ULL, __ATOMIC_RELAXED);
     __atomic_store_n(&bcm::counters.lastRequest, static_cast<uint32_t>(request), __ATOMIC_RELAXED);
     if (associate)
@@ -329,18 +369,18 @@ IOReturn BCM80211UserClient::runCommand(IOExternalMethodArguments *arguments, si
     if (associate && !bcm::prepareAssociate(legacy.request, shadow, capacity, abi))
         goto done;
     if (wowParameters) {
-        // Tahoe's airportd may use a larger apple80211_wow_parameter_data than the legacy family accepts.
-        // Assumption under test: the native layout is the legacy layout plus trailing fields, as with
-        // ScanMultiple (2458daa). The legacy handler bounds-checks pattern count and lengths itself.
-        static uint32_t loggedWoWSize;
-        wowNativeSize = legacy.request.length;
-        if (__atomic_exchange_n(&loggedWoWSize, static_cast<uint32_t>(wowNativeSize), __ATOMIC_RELAXED) != wowNativeSize)
-            SYSLOG("iouc", "WoW parameters %s native length 0x%zx (legacy 0x%zx)", set ? "set" : "get",
-                   wowNativeSize, bcm::LegacyWoWParametersSize);
-        if (wowNativeSize < bcm::LegacyWoWParametersSize || wowNativeSize > capacity)
+        // The legacy structure (0x4698) is larger than the small command buffer, so convert through a
+        // dedicated kernel buffer that Bridge::command registers as the copy-in/copy-out shadow.
+        if (legacy.request.length != NativeWoWParametersSize)
             goto done;
-        if (get)
-            bzero(shadow, wowNativeSize);
+        wowBuffer = static_cast<uint8_t *>(IOMallocZero(bcm::LegacyWoWParametersSize));
+        if (!wowBuffer) {
+            result = kIOReturnNoMemory;
+            goto done;
+        }
+        if (!expandWoWParameters(shadow, wowBuffer))
+            goto done;
+        legacy.request.data = reinterpret_cast<uintptr_t>(wowBuffer);
         legacy.request.length = static_cast<uint32_t>(bcm::LegacyWoWParametersSize);
     }
     if (networkMode) {
@@ -359,13 +399,19 @@ IOReturn BCM80211UserClient::runCommand(IOExternalMethodArguments *arguments, si
         result = kIOReturnSuccess;
     } else if (roamProfiles) {
         result = runRoamProfiles(endpoint, set, legacy, shadow, capacity);
+    } else if (wowParameters) {
+        result = static_cast<IOReturn>(bcm::Bridge::command(endpoint, set, legacy, wowBuffer,
+                                                            bcm::LegacyWoWParametersSize));
     } else {
         result = static_cast<IOReturn>(bcm::Bridge::command(endpoint, set, legacy, shadow, capacity));
     }
     if (result == kIOReturnSuccess) {
-        if (wowParameters && get && wowNativeSize > bcm::LegacyWoWParametersSize) {
-            bzero(shadow + bcm::LegacyWoWParametersSize, wowNativeSize - bcm::LegacyWoWParametersSize);
-            legacy.request.length = static_cast<uint32_t>(wowNativeSize);
+        if (wowParameters) {
+            if (get && !compactWoWParameters(wowBuffer, shadow)) {
+                result = kIOReturnOverrun;
+                goto done;
+            }
+            legacy.request.length = static_cast<uint32_t>(NativeWoWParametersSize);
         }
         if (capabilities && !bcm::expandCapabilities(legacy.request, shadow, capacity, abi,
                                                    endpoint.kind == bcm::InterfaceKind::Classic)) {
@@ -425,6 +471,10 @@ done:
                static_cast<unsigned long>(outputSize), result);
     }
     __atomic_store_n(&bcm::counters.lastResult, static_cast<uint32_t>(result), __ATOMIC_RELAXED);
+    if (wowBuffer) {
+        bzero(wowBuffer, bcm::LegacyWoWParametersSize);
+        IOFree(wowBuffer, bcm::LegacyWoWParametersSize);
+    }
     bzero(packet, packetSize);
     IOFree(packet, packetSize);
     return result;
