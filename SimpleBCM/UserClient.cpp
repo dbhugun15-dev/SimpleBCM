@@ -288,6 +288,8 @@ IOReturn BCM80211UserClient::runCommand(IOExternalMethodArguments *arguments, si
     const bool networkMode = set && bcm::isNetworkModeRequest(request);
     const bool roamProfiles = request == bcm::RoamProfileRequest && abi.roamProfileSize == bcm::NativeRoamProfileSize;
     bool outputPrepared = false;
+        const bool wowParameters = (set || get) && request == static_cast<int32_t>(bcm::WoWParametersRequest);
+    size_t wowNativeSize = 0;
     __atomic_fetch_add(&bcm::counters.commands, 1ULL, __ATOMIC_RELAXED);
     __atomic_store_n(&bcm::counters.lastRequest, static_cast<uint32_t>(request), __ATOMIC_RELAXED);
     if (associate)
@@ -326,6 +328,18 @@ IOReturn BCM80211UserClient::runCommand(IOExternalMethodArguments *arguments, si
         goto done;
     if (associate && !bcm::prepareAssociate(legacy.request, shadow, capacity, abi))
         goto done;
+        if (wowParameters) {
+        static uint32_t loggedWoWSize;
+        wowNativeSize = legacy.request.length;
+        if (__atomic_exchange_n(&loggedWoWSize, static_cast<uint32_t>(wowNativeSize), __ATOMIC_RELAXED) != wowNativeSize)
+            SYSLOG("iouc", "WoW parameters %s native length 0x%zx (legacy 0x%zx)", set ? "set" : "get",
+                   wowNativeSize, bcm::LegacyWoWParametersSize);
+        if (wowNativeSize < bcm::LegacyWoWParametersSize || wowNativeSize > capacity)
+            goto done;
+        if (get)
+            bzero(shadow, wowNativeSize);
+        legacy.request.length = static_cast<uint32_t>(bcm::LegacyWoWParametersSize);
+    }
     if (networkMode) {
         const auto converted = bcm::prepareNetworkMode(legacy.request, shadow, capacity, abi);
         if (converted != bcm::NetworkDataResult::Valid) {
@@ -346,6 +360,10 @@ IOReturn BCM80211UserClient::runCommand(IOExternalMethodArguments *arguments, si
         result = static_cast<IOReturn>(bcm::Bridge::command(endpoint, set, legacy, shadow, capacity));
     }
     if (result == kIOReturnSuccess) {
+                if (wowParameters && get && wowNativeSize > bcm::LegacyWoWParametersSize) {
+            bzero(shadow + bcm::LegacyWoWParametersSize, wowNativeSize - bcm::LegacyWoWParametersSize);
+            legacy.request.length = static_cast<uint32_t>(wowNativeSize);
+        }
         if (capabilities && !bcm::expandCapabilities(legacy.request, shadow, capacity, abi,
                                                    endpoint.kind == bcm::InterfaceKind::Classic)) {
             result = kIOReturnOverrun;
