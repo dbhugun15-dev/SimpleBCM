@@ -68,14 +68,18 @@ SYMBOLS = {
                 NETWORK_FIRMWARE_SYMBOL, NETWORK_CALCULATE_SYMBOL, NETWORK_SSID_SYMBOL,
                 NETWORK_AUTHENTICATOR_SYMBOL,
                 "__ZNK15AirPort_BrcmNIC9getVirtIfEP8OSObject", "_wlc_bsscfg_find_by_wlcif", "_wlc_sae_process_akm_type",
-                NETWORK_MAC_SYMBOL, "_wlc_validate_mac"],
+                NETWORK_MAC_SYMBOL, "_wlc_validate_mac",
+                "__ZN15AirPort_BrcmNIC10startGatedEP9IOService", "_wlc_verify_d3_exit",
+                "__ZN15AirPort_BrcmNIC14syncPowerStateEmi"],
 }
 SYMBOLS["AirPortOriginal"] = SYMBOLS["AirPort"]
 HARDWARE_VERSION_SYMBOL = "__ZN15AirPort_BrcmNIC19getHARDWARE_VERSIONEP8OSObjectP23apple80211_version_data"
 ROUTE_SYMBOLS = {
     "Legacy": SYMBOLS["Legacy"][:5] + ["__ZN16IO80211Interface25updateCountryCodePropertyEb",
                                        AWDL_SELECT_SYMBOL, NETWORK_MODE_SYMBOL],
-    "AirPort": [HARDWARE_VERSION_SYMBOL, "__ZN15AirPort_BrcmNIC9getLOCALEEP8OSObjectP22apple80211_locale_data"],
+    "AirPort": [HARDWARE_VERSION_SYMBOL, "__ZN15AirPort_BrcmNIC9getLOCALEEP8OSObjectP22apple80211_locale_data",
+                "__ZN15AirPort_BrcmNIC10startGatedEP9IOService", "_wlc_verify_d3_exit",
+                "__ZN15AirPort_BrcmNIC14syncPowerStateEmi"],
 }
 ROUTE_SYMBOLS["AirPortOriginal"] = ROUTE_SYMBOLS["AirPort"]
 SCALAR_GET_REQUESTS = [5, 8, 13, 15, 18, 21, 26, 28, 31, 33, 34, 35, 36, 41, 45, 50, 52, 55, 56, 57, 58, 59, 60,
@@ -212,6 +216,9 @@ def main():
             ssid_cipher_call = network_ssid_cipher_site(image)
             guards.append((ssid_cipher_call, 'SSID encryption calculation'))
             lines.append(f'static constexpr uint32_t {label}NetworkSSIDCipherCall = 0x{ssid_cipher_call:X};')
+            if image.read(0x148494, 5) != bytes.fromhex("49 8b 7c 24 10"):
+                raise RuntimeError("Unexpected wlc controller layout")
+            guards.append((0x148494, "wlc controller pointer at +0x10"))
         lines.append(f"static const ByteGuard {label}Guards[] = {{")
         for address, _ in guards:
             mask = bytearray([255] * 32)

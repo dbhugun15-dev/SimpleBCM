@@ -15,6 +15,7 @@
 #include "RadioPolicy.hpp"
 #include "TahoeDMA.hpp"
 #include "AWDLCoexistence.hpp"
+#include "PCIRecovery.hpp"
 #include <IOKit/IOLib.h>
 #include <IOKit/IOWorkLoop.h>
 #include <libkern/c++/OSData.h>
@@ -1070,6 +1071,10 @@ void Bridge::patchImage(KernelPatcher &patcher, size_t index, mach_vm_address_t 
             reject("AirPortQueryRoutingFailed");
             return;
         }
+        if (!preparePCIRecovery(patcher, index, address, size)) {
+            reject("PCIRecoveryRoutingFailed");
+            return;
+        }
         __atomic_fetch_or(&state, 4U, __ATOMIC_RELEASE);
     }
     if (ready()) {
@@ -1131,6 +1136,7 @@ void Bridge::publish(IOService *service) {
             controllerLoop->runAction(maintainNetworkMAC, controller);
         else if (controllerLoop && controller->getProperty("SimpleBCMHostAPRestoreAWDL") == kOSBooleanTrue)
             controllerLoop->runAction(restoreNetworkAWDL, controller);
+        publishPCIRecovery(service, controller);
         service->setProperty("WirelessControllerIdentity", controller->metaCast("AirPortDriver") ? "AirPortDriver" : "Unrecognized");
         auto bytes = reinterpret_cast<const uint8_t *>(controller);
         service->setProperty("BrcmPowerState", __atomic_load_n(reinterpret_cast<const uint64_t *>(bytes + 6800), __ATOMIC_RELAXED), 64);

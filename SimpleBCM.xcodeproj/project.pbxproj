@@ -29,6 +29,7 @@
 		000000000000000000000200 = {isa = PBXBuildFile; fileRef = 000000000000000000000201; };
 		000000000000000000000203 = {isa = PBXBuildFile; fileRef = 000000000000000000000204; };
 		000000000000000000000210 = {isa = PBXBuildFile; fileRef = 000000000000000000000211; };
+		000000000000000000000180 = {isa = PBXBuildFile; fileRef = 000000000000000000000181; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -65,6 +66,8 @@
 		000000000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.asm; path = build/Embedded/TahoeDMA.S; sourceTree = "<group>"; };
 		000000000000000000000211 = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AWDLCoexistence.cpp; sourceTree = "<group>"; };
 		000000000000000000000212 = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = AWDLCoexistence.hpp; sourceTree = "<group>"; };
+		000000000000000000000181 = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PCIRecovery.cpp; sourceTree = "<group>"; };
+		000000000000000000000182 = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = PCIRecovery.hpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -96,6 +99,8 @@
 				000000000000000000000202,
 				000000000000000000000211,
 				000000000000000000000212,
+				000000000000000000000181,
+				000000000000000000000182,
 				000000000000000000000078 /* Info.plist */,
 			);
 			path = SimpleBCM;
@@ -202,6 +207,7 @@
 				000000000000000000000200,
 				000000000000000000000203,
 				000000000000000000000210,
+				000000000000000000000180,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
