@@ -288,7 +288,7 @@ IOReturn BCM80211UserClient::runCommand(IOExternalMethodArguments *arguments, si
     const bool networkMode = set && bcm::isNetworkModeRequest(request);
     const bool roamProfiles = request == bcm::RoamProfileRequest && abi.roamProfileSize == bcm::NativeRoamProfileSize;
     bool outputPrepared = false;
-        const bool wowParameters = (set || get) && request == static_cast<int32_t>(bcm::WoWParametersRequest);
+    const bool wowParameters = (set || get) && request == static_cast<int32_t>(bcm::WoWParametersRequest);
     size_t wowNativeSize = 0;
     __atomic_fetch_add(&bcm::counters.commands, 1ULL, __ATOMIC_RELAXED);
     __atomic_store_n(&bcm::counters.lastRequest, static_cast<uint32_t>(request), __ATOMIC_RELAXED);
@@ -328,7 +328,10 @@ IOReturn BCM80211UserClient::runCommand(IOExternalMethodArguments *arguments, si
         goto done;
     if (associate && !bcm::prepareAssociate(legacy.request, shadow, capacity, abi))
         goto done;
-        if (wowParameters) {
+    if (wowParameters) {
+        // Tahoe's airportd may use a larger apple80211_wow_parameter_data than the legacy family accepts.
+        // Assumption under test: the native layout is the legacy layout plus trailing fields, as with
+        // ScanMultiple (2458daa). The legacy handler bounds-checks pattern count and lengths itself.
         static uint32_t loggedWoWSize;
         wowNativeSize = legacy.request.length;
         if (__atomic_exchange_n(&loggedWoWSize, static_cast<uint32_t>(wowNativeSize), __ATOMIC_RELAXED) != wowNativeSize)
@@ -360,7 +363,7 @@ IOReturn BCM80211UserClient::runCommand(IOExternalMethodArguments *arguments, si
         result = static_cast<IOReturn>(bcm::Bridge::command(endpoint, set, legacy, shadow, capacity));
     }
     if (result == kIOReturnSuccess) {
-                if (wowParameters && get && wowNativeSize > bcm::LegacyWoWParametersSize) {
+        if (wowParameters && get && wowNativeSize > bcm::LegacyWoWParametersSize) {
             bzero(shadow + bcm::LegacyWoWParametersSize, wowNativeSize - bcm::LegacyWoWParametersSize);
             legacy.request.length = static_cast<uint32_t>(wowNativeSize);
         }
