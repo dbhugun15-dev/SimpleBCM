@@ -59,6 +59,28 @@ bool compactWoWParameters(const uint8_t *legacy, uint8_t *native) {
 namespace {
 constexpr int32_t CountryCodeRequest = 51;
 char savedCountry[3];
+char countryTrace[480];
+uint32_t countryTraceCount;
+
+// Keeps a short rolling history of country events in the controller's registry properties, so it
+// can be read with ioreg after a wake (the kernel message buffer is too small to rely on).
+void recordCountry(IOService *controller, const char *event) {
+    char line[64];
+    snprintf(line, sizeof(line), "#%u %s; ", ++countryTraceCount, event);
+    size_t used = strnlen(countryTrace, sizeof(countryTrace));
+    const size_t needed = strnlen(line, sizeof(line));
+    if (used + needed >= sizeof(countryTrace)) {
+        const size_t drop = used + needed - sizeof(countryTrace) + 1;
+        memmove(countryTrace, countryTrace + drop, used - drop + 1);
+        used -= drop;
+    }
+    memcpy(countryTrace + used, line, needed + 1);
+    if (controller) {
+        controller->setProperty("SimpleBCMCountryTrace", countryTrace);
+        if (savedCountry[0])
+            controller->setProperty("SimpleBCMCountrySaved", savedCountry);
+    }
+}
 
 bool isValidCountry(const char *code) {
     if (code[0] < 'A' || code[0] > 'Z' || code[1] < 'A' || code[1] > 'Z')
@@ -86,6 +108,9 @@ void maintainCountry(const bcm::Endpoint &endpoint, bcm::LegacyRequest &request,
             savedCountry[0] = current.country[0];
             savedCountry[1] = current.country[1];
             SYSLOG("country", "saved %c%c", savedCountry[0], savedCountry[1]);
+            char event[24];
+            snprintf(event, sizeof(event), "saved %c%c", savedCountry[0], savedCountry[1]);
+            recordCountry(endpoint.controller, event);
         }
         return;
     }
@@ -103,12 +128,19 @@ void maintainCountry(const bcm::Endpoint &endpoint, bcm::LegacyRequest &request,
     const auto setResult = bcm::Bridge::command(endpoint, true, set, buffer, sizeof(buffer));
     if (setResult) {
         SYSLOG("country", "restore %c%c failed (%d)", savedCountry[0], savedCountry[1], setResult);
+        char event[40];
+        snprintf(event, sizeof(event), "restore %c%c failed %d", savedCountry[0], savedCountry[1], setResult);
+        recordCountry(endpoint.controller, event);
         return;
     }
     const auto getResult = bcm::Bridge::command(endpoint, false, request, output, capacity);
     memcpy(&current, output, sizeof(current));
     SYSLOG("country", "restored %c%c, driver now reports %c%c (%d)", savedCountry[0], savedCountry[1],
            current.country[0] ? current.country[0] : '-', current.country[1] ? current.country[1] : '-', getResult);
+    char event[48];
+    snprintf(event, sizeof(event), "restored %c%c now %c%c r%d", savedCountry[0], savedCountry[1],
+             current.country[0] ? current.country[0] : '-', current.country[1] ? current.country[1] : '-', getResult);
+    recordCountry(endpoint.controller, event);
 }
 }
 
@@ -527,6 +559,10 @@ done:
             SYSLOG("country", "get result 0x%x len %u out %lu ver %u cc %02x %02x %02x %02x",
                    result, legacy.request.length, static_cast<unsigned long>(outputSize),
                    bcm::readUInt32(first), first[4], first[5], first[6], first[7]);
+            char event[48];
+            snprintf(event, sizeof(event), "get r%x v%u %02x%02x%02x%02x", result, bcm::readUInt32(first),
+                     first[4], first[5], first[6], first[7]);
+            recordCountry(endpoint.controller, event);
         }
     }
     if (outputPrepared) {
