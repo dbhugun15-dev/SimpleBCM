@@ -514,6 +514,21 @@ IOReturn BCM80211UserClient::runCommand(IOExternalMethodArguments *arguments, si
         }
     }
 done:
+    if (get && request == CountryCodeRequest) {
+        // Trace: log each change in what the driver reports for the country.
+        static uint64_t lastTrace = ~0ULL;
+        uint8_t first[8] {};
+        if (result == kIOReturnSuccess)
+            memcpy(first, shadow, outputSize < sizeof(first) ? outputSize : sizeof(first));
+        uint64_t trace = static_cast<uint32_t>(result);
+        trace = (trace << 32) | (static_cast<uint64_t>(first[4]) << 8) | first[5];
+        if (trace != lastTrace) {
+            lastTrace = trace;
+            SYSLOG("country", "get result 0x%x len %u out %lu ver %u cc %02x %02x %02x %02x",
+                   result, legacy.request.length, static_cast<unsigned long>(outputSize),
+                   bcm::readUInt32(first), first[4], first[5], first[6], first[7]);
+        }
+    }
     if (outputPrepared) {
         const auto status = arguments->structureOutputDescriptor->complete(kIODirectionIn);
         if (result == kIOReturnSuccess)
